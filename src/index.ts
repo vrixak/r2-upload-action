@@ -31,6 +31,8 @@ const S3 = new S3Client({
     },
 });
 
+const MAX_RETRY_ATTEMPTS = 3;
+
 const getFileList = (dir: string) => {
     let files: string[] = [];
     const items = fs.readdirSync(dir, {
@@ -91,19 +93,28 @@ const run = async (config: R2Config) => {
             name: 'addETag'
         });
 
-        try {
-            const data = await S3.send(cmd);
-            console.log(`R2 Success - ${file}`);
-            map.set(file, data);
-
-            const fileUrl = await getSignedUrl(S3, cmd);
-            urls[file] = fileUrl;
-        } catch (err: unknown) {
-            const error = err as S3ServiceException;
-            if (error.hasOwnProperty("$metadata")) {
-                if (error.$metadata.httpStatusCode !== 412) // If-None-Match
-                    throw error;
+        for(let attempt = 0; attempt < MAX_RETRY_ATTEMPTS; attempt++) {
+            console.log(`File Upload Attempt #${attempt}`)
+            try {
+                const data = await S3.send(cmd);
+                console.log(`R2 Success - ${file}`);
+                map.set(file, data);
+    
+                const fileUrl = await getSignedUrl(S3, cmd);
+                urls[file] = fileUrl;
+            } catch (err: unknown) {
+                const error = err as S3ServiceException;
+                if ( error.message === 'socket hang up') {
+                    console.log(`Attempt failed for Socket Hangup ${attempt}`)
+                    continue;
+                }
+                if (error.hasOwnProperty("$metadata")) {
+                    if (error.$metadata.httpStatusCode !== 412) // If-None-Match
+                        throw error;
+                }
             }
+            // Successful completion, break the loop.
+            break;
         }
     }
 
